@@ -7,6 +7,7 @@ import { createRotateTrack } from './animation/create-rotate-track';
 import { AnimController } from './cameras/anim-controller';
 import { Camera, type CameraFrame, type CameraController } from './cameras/camera';
 import { FlyController } from './cameras/fly-controller';
+import { FpsController } from './cameras/fps-controller';
 import { OrbitController } from './cameras/orbit-controller';
 import { easeOut } from './core/math';
 import { Annotation } from './settings';
@@ -68,13 +69,15 @@ class CameraManager {
         const controllers = {
             orbit: new OrbitController(),
             fly: new FlyController(),
+            fps: new FpsController(),
             anim: animTrack ? new AnimController(animTrack) : null
         };
 
         controllers.fly.collider = collider;
+        controllers.fps.collider = collider;
 
-        const getController = (cameraMode: 'orbit' | 'anim' | 'fly'): CameraController => {
-            return controllers[cameraMode];
+        const getController = (cameraMode: CameraMode): CameraController => {
+            return controllers[cameraMode] as CameraController;
         };
 
         // set the global animation flag
@@ -88,6 +91,9 @@ class CameraManager {
         const target = new Camera(this.camera);             // the active controller updates this
         const from = new Camera(this.camera);               // stores the previous camera state during transition
         let fromMode: CameraMode = isObjectExperience ? 'orbit' : 'fly';
+
+        // tracks the mode to restore when exiting FPS
+        let preFpsMode: CameraMode = 'fly';
 
         // enter the initial controller
         getController(state.cameraMode).onEnter(this.camera);
@@ -151,7 +157,26 @@ class CameraManager {
                         }
                     }
                     break;
+                case 'requestFirstPerson':
+                    state.cameraMode = 'fly';
+                    break;
+                case 'toggleFps':
+                    if (collider) {
+                        if (state.cameraMode === 'fps') {
+                            state.cameraMode = preFpsMode;
+                        } else {
+                            preFpsMode = state.cameraMode;
+                            state.cameraMode = 'fps';
+                        }
+                    }
+                    break;
                 case 'cancel':
+                    if (state.cameraMode === 'anim') {
+                        state.cameraMode = fromMode;
+                    } else if (state.cameraMode === 'fps') {
+                        state.cameraMode = preFpsMode;
+                    }
+                    break;
                 case 'interrupt':
                     if (state.cameraMode === 'anim') {
                         state.cameraMode = fromMode;

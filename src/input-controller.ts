@@ -104,6 +104,7 @@ class InputController {
         mouse: [0, 0, 0],
         shift: 0,
         ctrl: 0,
+        jump: 0,
         touches: 0
     };
 
@@ -207,7 +208,7 @@ class InputController {
         window.addEventListener('keydown', (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
                 events.fire('inputEvent', 'cancel', event);
-            } else if (!event.ctrlKey && !event.altKey && !event.metaKey) {
+            } else if (state.cameraMode !== 'fps' && !event.ctrlKey && !event.altKey && !event.metaKey) {
                 switch (event.key) {
                     case 'f':
                         events.fire('inputEvent', 'frame', event);
@@ -220,6 +221,32 @@ class InputController {
                         break;
                 }
             }
+        });
+
+        // Pointer lock management for FPS mode on desktop
+        events.on('cameraMode:changed', (value: string, prev: string) => {
+            if (value === 'fps' && state.inputMode === 'desktop') {
+                (this._desktopInput as any)._pointerLock = true;
+                canvas.requestPointerLock();
+            } else if (prev === 'fps') {
+                (this._desktopInput as any)._pointerLock = false;
+                if (document.pointerLockElement === canvas) {
+                    document.exitPointerLock();
+                }
+            }
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            if (!document.pointerLockElement && state.cameraMode === 'fps') {
+                events.fire('inputEvent', 'cancel');
+            }
+        });
+
+        // Pointer lock request rejected (e.g., no user gesture, document hidden).
+        // Revert to avoid being stuck in FPS mode without mouse capture.
+        document.addEventListener('pointerlockerror', () => {
+            (this._desktopInput as any)._pointerLock = false;
+            events.fire('inputEvent', 'cancel');
         });
     }
 
@@ -236,7 +263,7 @@ class InputController {
         const { touch, pinch, count } = this._orbitInput.read();
         const { leftStick, rightStick } = this._gamepadInput.read();
 
-        const { state } = this.global;
+        const { state, events } = this.global;
         const { camera } = this.global.camera;
 
         // update state
@@ -245,6 +272,7 @@ class InputController {
             (key[keyCode.E] - key[keyCode.Q]),
             (key[keyCode.W] - key[keyCode.S]) + (key[keyCode.UP] - key[keyCode.DOWN])
         ));
+        this._state.jump += key[keyCode.SPACE];
         this._state.touches += count[0];
         for (let i = 0; i < button.length; i++) {
             this._state.mouse[i] += button[i];
@@ -252,12 +280,14 @@ class InputController {
         this._state.shift += key[keyCode.SHIFT];
         this._state.ctrl += key[keyCode.CTRL];
 
-        if (state.cameraMode !== 'fly' && this._state.axis.length() > 0) {
-            state.cameraMode = 'fly';
+        const isFps = state.cameraMode === 'fps';
+        const isFirstPerson = state.cameraMode === 'fly' || isFps;
+        if (!isFirstPerson && this._state.axis.length() > 0) {
+            events.fire('inputEvent', 'requestFirstPerson');
         }
 
         const orbit = +(state.cameraMode === 'orbit');
-        const fly = +(state.cameraMode === 'fly');
+        const fly = +isFirstPerson;
         const double = +(this._state.touches > 1);
         const pan = this._state.mouse[2] || +(button[2] === -1) || double;
 
@@ -267,8 +297,17 @@ class InputController {
 
         // desktop move
         const v = tmpV1.set(0, 0, 0);
-        const keyMove = this._state.axis.clone().normalize();
+        const keyMove = this._state.axis.clone();
+        if (isFps) {
+            // In FPS mode, normalize only horizontal axes so jump doesn't reduce speed
+            keyMove.y = 0;
+        }
+        keyMove.normalize();
         v.add(keyMove.mulScalar(fly * this.moveSpeed * (this._state.shift ? 4 : this._state.ctrl ? 0.25 : 1) * dt));
+        if (isFps) {
+            // Pass jump signal as raw Y; FPS controller uses move[1] > 0 as boolean trigger
+            v.y = this._state.jump > 0 ? 1 : 0;
+        }
         const panMove = screenToWorld(camera, mouse[0], mouse[1], distance);
         v.add(panMove.mulScalar(pan));
         const wheelMove = new Vec3(0, 0, -wheel[0]);

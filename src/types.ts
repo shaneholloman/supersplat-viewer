@@ -2,7 +2,7 @@ import type { Entity, EventHandler, AppBase } from 'playcanvas';
 
 import type { ExperienceSettings } from './settings';
 
-type CameraMode = 'orbit' | 'anim' | 'fly';
+type CameraMode = 'orbit' | 'anim' | 'fly' | 'fps';
 
 type InputMode = 'desktop' | 'touch';
 
@@ -40,6 +40,7 @@ type State = {
     animationPaused: boolean;
     hasAR: boolean;
     hasVR: boolean;
+    hasCollision: boolean;
     isFullscreen: boolean;
     controlsHidden: boolean;
 };
