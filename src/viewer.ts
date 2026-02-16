@@ -31,6 +31,7 @@ import { nearlyEquals } from './core/math';
 import { InputController } from './input-controller';
 import type { ExperienceSettings, PostEffectSettings } from './settings';
 import type { Global } from './types';
+import type { VoxelCollider } from './voxel-collider';
 
 const gammaChunkGlsl = `
 vec3 prepareOutputFromGamma(vec3 gammaColor) {
@@ -133,7 +134,7 @@ class Viewer {
         }
     };
 
-    constructor(global: Global, gsplatLoad: Promise<Entity>, skyboxLoad: Promise<void>) {
+    constructor(global: Global, gsplatLoad: Promise<Entity>, skyboxLoad: Promise<void> | undefined, voxelLoad: Promise<VoxelCollider> | undefined) {
         this.global = global;
 
         const { app, settings, config, events, state, camera } = global;
@@ -283,8 +284,9 @@ class Viewer {
         });
 
         // wait for the model to load
-        Promise.all([gsplatLoad, skyboxLoad]).then((results) => {
+        Promise.all([gsplatLoad, skyboxLoad, voxelLoad]).then((results) => {
             const gsplat = results[0].gsplat as GSplatComponent;
+            const collider = results[2];
 
             // get scene bounding box
             const gsplatBbox = gsplat.customAabb;
@@ -298,7 +300,7 @@ class Viewer {
 
             this.inputController = new InputController(global);
 
-            this.cameraManager = new CameraManager(global, sceneBound);
+            this.cameraManager = new CameraManager(global, sceneBound, collider);
             applyCamera(this.cameraManager.camera);
 
             const { instance } = gsplat;

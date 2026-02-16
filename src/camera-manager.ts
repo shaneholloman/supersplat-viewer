@@ -11,6 +11,7 @@ import { OrbitController } from './cameras/orbit-controller';
 import { easeOut } from './core/math';
 import { Annotation } from './settings';
 import { CameraMode, Global } from './types';
+import type { VoxelCollider } from './voxel-collider';
 
 const tmpCamera = new Camera();
 const tmpv = new Vec3();
@@ -38,7 +39,7 @@ class CameraManager {
     // holds the camera state
     camera = new Camera();
 
-    constructor(global: Global, bbox: BoundingBox) {
+    constructor(global: Global, bbox: BoundingBox, collider: VoxelCollider | null = null) {
         const { events, settings, state } = global;
 
         const camera0 = settings.cameras[0].initial;
@@ -69,6 +70,8 @@ class CameraManager {
             fly: new FlyController(),
             anim: animTrack ? new AnimController(animTrack) : null
         };
+
+        controllers.fly.collider = collider;
 
         const getController = (cameraMode: 'orbit' | 'anim' | 'fly'): CameraController => {
             return controllers[cameraMode];
