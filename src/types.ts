@@ -24,6 +24,7 @@ type Config = {
     aa: boolean;                                // render with antialiasing
     webgpu: boolean;                            // use WebGPU device
     gpusort: boolean;                           // use GPU sorting for splats
+    heatmap: boolean;                           // render heatmap debug overlay (WebGPU only)
 };
 
 // observable state that can change at runtime
@@ -41,6 +42,8 @@ type State = {
     hasAR: boolean;
     hasVR: boolean;
     hasCollision: boolean;
+    hasVoxelOverlay: boolean;
+    voxelOverlayEnabled: boolean;
     isFullscreen: boolean;
     controlsHidden: boolean;
 };

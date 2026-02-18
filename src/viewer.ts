@@ -32,6 +32,7 @@ import { InputController } from './input-controller';
 import type { ExperienceSettings, PostEffectSettings } from './settings';
 import type { Global } from './types';
 import type { VoxelCollider } from './voxel-collider';
+import { VoxelDebugOverlay } from './voxel-debug-overlay';
 
 const gammaChunkGlsl = `
 vec3 prepareOutputFromGamma(vec3 gammaColor) {
@@ -124,6 +125,8 @@ class Viewer {
     annotations: Annotations;
 
     forceRenderNextFrame = false;
+
+    voxelOverlay: VoxelDebugOverlay | null = null;
 
     origChunks: {
         glsl: {
@@ -275,6 +278,12 @@ class Viewer {
                 // apply to the camera entity
                 applyCamera(this.cameraManager.camera);
             }
+
+        });
+
+        // Render voxel debug overlay
+        app.on('prerender', () => {
+            this.voxelOverlay?.update();
         });
 
         // update state on first frame
@@ -301,6 +310,18 @@ class Viewer {
             this.inputController = new InputController(global);
 
             state.hasCollision = !!collider;
+
+            // Create voxel debug overlay in WebGPU only
+            if (collider && config.webgpu) {
+                this.voxelOverlay = new VoxelDebugOverlay(app, collider, camera);
+                this.voxelOverlay.mode = config.heatmap ? 'heatmap' : 'overlay';
+                state.hasVoxelOverlay = true;
+
+                events.on('voxelOverlayEnabled:changed', (value: boolean) => {
+                    this.voxelOverlay.enabled = value;
+                    app.renderNextFrame = true;
+                });
+            }
 
             this.cameraManager = new CameraManager(global, sceneBound, collider);
             applyCamera(this.cameraManager.camera);
