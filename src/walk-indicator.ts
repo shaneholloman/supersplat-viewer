@@ -1,10 +1,20 @@
 import {
     type AppBase,
-    type Entity,
+    BLEND_NONE,
+    CULLFACE_NONE,
+    Entity,
     Mat4,
+    Mesh,
+    MeshInstance,
+    PRIMITIVE_TRIANGLES,
+    SEMANTIC_POSITION,
+    SEMANTIC_TEXCOORD1,
     ShaderChunks,
+    ShaderMaterial,
     Vec3
 } from 'playcanvas';
+
+// ── gsplat fragment shader overrides (GLSL) ─────────────────────────────────
 
 const gsplatPSGlsl = /* glsl */`
 
@@ -117,22 +127,37 @@ void main(void) {
             vec3 walkWorldPos = walkReconstructWorldPos();
             float xzDist = length(walkWorldPos.xz - walk_target.xz);
 
-            float columnFade = 1.0 - smoothstep(walk_radius * 0.6, walk_radius, xzDist);
+            float nd = xzDist / walk_radius;
+            float lightFalloff = 1.0 / (1.0 + nd * nd * 8.0);
+            float coreBoost = 1.0 / (1.0 + nd * nd * 200.0);
+
+            float pulse = 1.0 + 0.1 * sin(walk_time * 3.0);
 
             float ringPhase = fract(walk_time * 0.5);
-            float ringDist = abs(xzDist / walk_radius - ringPhase);
-            float ring = smoothstep(0.12, 0.0, ringDist) * 0.4;
+            float ringPos = nd - ringPhase;
+            float ringFade = 1.0 - ringPhase;
+            float crest = smoothstep(0.1, 0.0, abs(ringPos)) * 1.0 * ringFade * (1.0 + lightFalloff);
+            float trough = smoothstep(0.25, 0.0, abs(ringPos + 0.15)) * -1.0 * ringFade;
+            float ring = crest + trough;
 
-            float glow = (columnFade * 0.3 + ring) * alpha;
+            float intensity = (lightFalloff * 0.8 + coreBoost * 1.5 + ring) * pulse;
 
-            vec3 glowColor = mix(vec3(0.2, 0.6, 1.0), vec3(1.0), 0.3);
-            gl_FragColor = vec4(gaussianColor.xyz * alpha + glowColor * glow, alpha);
+            float lum = dot(gaussianColor.rgb, vec3(0.299, 0.587, 0.114));
+            float adaptiveIntensity = intensity * (1.0 - lum * 0.7);
+            vec3 litColor = gaussianColor.xyz * (1.0 + vec3(0.85, 0.92, 1.0) * adaptiveIntensity);
+            float spatialFalloff = normExp(A);
+            float boostedBase = mix(gaussianColor.a, 1.0, min(intensity * 0.3, 1.0));
+            float glowAlpha = spatialFalloff * boostedBase;
+
+            gl_FragColor = vec4(litColor * glowAlpha, glowAlpha);
         } else {
             gl_FragColor = vec4(gaussianColor.xyz * alpha, alpha);
         }
     #endif
 }
 `;
+
+// ── gsplat fragment shader overrides (WGSL) ─────────────────────────────────
 
 const gsplatPSWgsl = /* wgsl */`
 
@@ -188,7 +213,7 @@ fn walkReconstructWorldPos(fragCoord: vec4f) -> vec3f {
     let ndc = fragCoord.xy * uniform.viewport_size.zw * 2.0 - 1.0;
     let viewPos = vec3f(
         ndc.x * linearDepth / uniform.matrix_projection[0][0],
-        ndc.y * linearDepth / uniform.matrix_projection[1][1],
+        -ndc.y * linearDepth / uniform.matrix_projection[1][1],
         -linearDepth
     );
     return (uniform.walk_viewInverse * vec4f(viewPos, 1.0)).xyz;
@@ -249,16 +274,29 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
             let walkWorldPos = walkReconstructWorldPos(pcPosition);
             let xzDist = length(walkWorldPos.xz - uniform.walk_target.xz);
 
-            let columnFade = 1.0 - smoothstep(uniform.walk_radius * 0.6, uniform.walk_radius, xzDist);
+            let nd = xzDist / uniform.walk_radius;
+            let lightFalloff = 1.0 / (1.0 + nd * nd * 8.0);
+            let coreBoost = 1.0 / (1.0 + nd * nd * 200.0);
+
+            let pulse = 1.0 + 0.1 * sin(uniform.walk_time * 3.0);
 
             let ringPhase = fract(uniform.walk_time * 0.5);
-            let ringDist = abs(xzDist / uniform.walk_radius - ringPhase);
-            let ring = smoothstep(0.12, 0.0, ringDist) * 0.4;
+            let ringPos = nd - ringPhase;
+            let ringFade = 1.0 - ringPhase;
+            let crest = smoothstep(0.1, 0.0, abs(ringPos)) * 1.0 * ringFade * (1.0 + lightFalloff);
+            let trough = smoothstep(0.25, 0.0, abs(ringPos + 0.15)) * -1.0 * ringFade;
+            let ring = crest + trough;
 
-            let glow = (columnFade * 0.3 + ring) * alpha;
+            let intensity = (lightFalloff * 0.8 + coreBoost * 1.5 + ring) * pulse;
 
-            let glowColor = mix(vec3f(0.2, 0.6, 1.0), vec3f(1.0), 0.3);
-            output.color = vec4f(gc * alpha + glowColor * glow, alpha);
+            let lum = dot(gc, vec3f(0.299, 0.587, 0.114));
+            let adaptiveIntensity = intensity * (1.0 - lum * 0.7);
+            let litColor = gc * (1.0 + vec3f(0.85, 0.92, 1.0) * adaptiveIntensity);
+            let spatialFalloff = normExp(A);
+            let boostedBase = mix(f32(gaussianColor.a), 1.0, min(intensity * 0.3, 1.0));
+            let glowAlpha = spatialFalloff * boostedBase;
+
+            output.color = vec4f(litColor * glowAlpha, glowAlpha);
         } else {
             output.color = vec4f(gc * alpha, alpha);
         }
@@ -267,8 +305,250 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
     return output;
 }`;
 
+// ── Core billboard shaders ──────────────────────────────────────────────────
+
+const coreVS = /* glsl */`
+    attribute vec3 vertex_position;
+
+    uniform mat4 matrix_viewProjection;
+    uniform mat4 walk_viewInverse;
+    uniform vec3 walk_target;
+    uniform vec4 viewport_size;
+
+    varying vec2 vUV;
+
+    void main() {
+        vec3 camRight = normalize(vec3(walk_viewInverse[0][0], 0.0, walk_viewInverse[0][2]));
+        vec3 up = vec3(0.0, 1.0, 0.0);
+
+        float halfWidth = 0.0075;
+        float halfHeight = 10000.0;
+
+        vec3 centerWorld = walk_target + up * vertex_position.y * halfHeight;
+
+        vec4 targetClip = matrix_viewProjection * vec4(walk_target, 1.0);
+        float minPixelHalf = 1.0 / viewport_size.x * targetClip.w;
+        float effectiveHalfWidth = max(halfWidth, minPixelHalf);
+
+        vec3 worldPos = centerWorld + camRight * vertex_position.x * effectiveHalfWidth;
+
+        gl_Position = matrix_viewProjection * vec4(worldPos, 1.0);
+        vUV = vertex_position.xy;
+    }
+`;
+
+const coreVS_WGSL = /* wgsl */`
+    attribute vertex_position: vec3f;
+    uniform matrix_viewProjection: mat4x4f;
+    uniform walk_viewInverse: mat4x4f;
+    uniform walk_target: vec3f;
+    uniform viewport_size: vec4f;
+    varying vUV: vec2f;
+
+    @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
+        var output: VertexOutput;
+
+        let camRight = normalize(vec3f(uniform.walk_viewInverse[0][0], 0.0, uniform.walk_viewInverse[0][2]));
+        let up = vec3f(0.0, 1.0, 0.0);
+
+        let halfWidth = 0.0075;
+        let halfHeight = 10000.0;
+
+        let centerWorld = uniform.walk_target + up * input.vertex_position.y * halfHeight;
+
+        let targetClip = uniform.matrix_viewProjection * vec4f(uniform.walk_target, 1.0);
+        let minPixelHalf = 1.0 / uniform.viewport_size.x * targetClip.w;
+        let effectiveHalfWidth = max(halfWidth, minPixelHalf);
+
+        let worldPos = centerWorld + camRight * input.vertex_position.x * effectiveHalfWidth;
+
+        output.position = uniform.matrix_viewProjection * vec4f(worldPos, 1.0);
+        output.vUV = input.vertex_position.xy;
+        return output;
+    }
+`;
+
+const coreFS = /* glsl */`
+    precision highp float;
+
+    uniform float walk_time;
+
+    varying vec2 vUV;
+
+    void main() {
+        if (abs(vUV.y) > 0.95) discard;
+
+        float pulse = 1.0 + 0.08 * sin(walk_time * 3.0);
+        vec3 color = vec3(2.55, 2.76, 3.0) * pulse;
+
+        gl_FragColor = vec4(color, 1.0);
+    }
+`;
+
+const coreFS_WGSL = /* wgsl */`
+    uniform walk_time: f32;
+    varying vUV: vec2f;
+
+    @fragment fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+        var output: FragmentOutput;
+
+        if (abs(input.vUV.y) > 0.95) {
+            discard;
+            return output;
+        }
+
+        let pulse = 1.0 + 0.08 * sin(uniform.walk_time * 3.0);
+        let color = vec3f(2.55, 2.76, 3.0) * pulse;
+
+        output.color = vec4f(color, 1.0);
+        return output;
+    }
+`;
+
+// ── Particle shaders ────────────────────────────────────────────────────────
+
+const particleVS = /* glsl */`
+    attribute vec3 vertex_position;
+    attribute vec2 aQuadCorner;
+
+    uniform mat4 matrix_viewProjection;
+    uniform mat4 walk_viewInverse;
+    uniform vec3 walk_target;
+    uniform float walk_time;
+
+    varying vec2 vUV;
+    varying float vFade;
+
+    void main() {
+        float rand0 = vertex_position.x;
+        float rand1 = vertex_position.y;
+        float rand2 = vertex_position.z;
+
+        float baseAngle = rand0 * 6.28318530718;
+        float rBase = sqrt(rand2) * 0.4;
+        float r = rBase * smoothstep(0.0, 0.5, walk_time);
+
+        float riseSpeed = 0.3 + rand2 * 0.4;
+        float t = fract(max(walk_time - rand1 * 2.0, 0.0) * riseSpeed);
+        float y = t * t * 1.5 - 0.1;
+
+        float swirl = baseAngle + t * (0.5 + rand1);
+        float swirlR = r + 0.01;
+        vec3 center = walk_target + vec3(swirlR * cos(swirl), y, swirlR * sin(swirl));
+
+        vec3 camRight = walk_viewInverse[0].xyz;
+        vec3 camUp = walk_viewInverse[1].xyz;
+        float halfSize = 0.00625;
+
+        vec3 worldPos = center
+                      + camRight * aQuadCorner.x * halfSize
+                      + camUp * aQuadCorner.y * halfSize;
+
+        gl_Position = matrix_viewProjection * vec4(worldPos, 1.0);
+        vUV = aQuadCorner;
+        float maxT = 1.0 - rBase;
+        vFade = smoothstep(0.0, 0.1, t) * smoothstep(maxT, maxT - 0.15, t);
+    }
+`;
+
+const particleVS_WGSL = /* wgsl */`
+    attribute vertex_position: vec3f;
+    attribute aQuadCorner: vec2f;
+
+    uniform matrix_viewProjection: mat4x4f;
+    uniform walk_viewInverse: mat4x4f;
+    uniform walk_target: vec3f;
+    uniform walk_time: f32;
+
+    varying vUV: vec2f;
+    varying vFade: f32;
+
+    @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
+        var output: VertexOutput;
+
+        let rand0 = input.vertex_position.x;
+        let rand1 = input.vertex_position.y;
+        let rand2 = input.vertex_position.z;
+
+        let baseAngle = rand0 * 6.28318530718;
+        let rBase = sqrt(rand2) * 0.4;
+        let r = rBase * smoothstep(0.0, 0.5, uniform.walk_time);
+
+        let riseSpeed = 0.3 + rand2 * 0.4;
+        let t = fract(max(uniform.walk_time - rand1 * 2.0, 0.0) * riseSpeed);
+        let y = t * t * 1.5 - 0.1;
+
+        let swirl = baseAngle + t * (0.5 + rand1);
+        let swirlR = r + 0.01;
+        let center = uniform.walk_target + vec3f(swirlR * cos(swirl), y, swirlR * sin(swirl));
+
+        let camRight = uniform.walk_viewInverse[0].xyz;
+        let camUp = uniform.walk_viewInverse[1].xyz;
+        let halfSize = 0.00625;
+
+        let worldPos = center
+                     + camRight * input.aQuadCorner.x * halfSize
+                     + camUp * input.aQuadCorner.y * halfSize;
+
+        output.position = uniform.matrix_viewProjection * vec4f(worldPos, 1.0);
+        output.vUV = input.aQuadCorner;
+        let maxT = 1.0 - rBase;
+        output.vFade = smoothstep(0.0, 0.1, t) * smoothstep(maxT, maxT - 0.15, t);
+        return output;
+    }
+`;
+
+const particleFS = /* glsl */`
+    precision highp float;
+
+    varying vec2 vUV;
+    varying float vFade;
+
+    void main() {
+        float r = length(vUV);
+        if (r > 1.0 || vFade < 0.5) discard;
+        gl_FragColor = vec4(2.55, 2.76, 3.0, 1.0);
+    }
+`;
+
+const particleFS_WGSL = /* wgsl */`
+    varying vUV: vec2f;
+    varying vFade: f32;
+
+    @fragment fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+        var output: FragmentOutput;
+
+        let r = length(input.vUV);
+        if (r > 1.0 || input.vFade < 0.5) {
+            discard;
+            return output;
+        }
+        output.color = vec4f(2.55, 2.76, 3.0, 1.0);
+        return output;
+    }
+`;
+
+// ── Constants & helpers ─────────────────────────────────────────────────────
+
+const PARTICLE_COUNT = 250;
+
+const QUAD_CORNERS = [-1, -1, 1, -1, 1, 1, -1, 1];
+
 const viewMat = new Mat4();
 const invViewMat = new Mat4();
+const targetVec = new Float32Array(3);
+
+const mulberry32 = (seed: number) => {
+    return () => {
+        seed |= 0;
+        seed = seed + 0x6D2B79F5 | 0;
+        let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+        t ^= t + Math.imul(t ^ t >>> 7, 61 | t);
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+};
+
+// ── WalkIndicator ───────────────────────────────────────────────────────────
 
 class WalkIndicator {
     private app: AppBase;
@@ -277,9 +557,15 @@ class WalkIndicator {
 
     private startTime = 0;
 
+    private visible = false;
+
     private origGlsl: string;
 
     private origWgsl: string;
+
+    private coreEntity: Entity;
+
+    private particleEntity: Entity;
 
     constructor(app: AppBase) {
         this.app = app;
@@ -293,6 +579,125 @@ class WalkIndicator {
 
         glsl.set('gsplatPS', gsplatPSGlsl);
         wgsl.set('gsplatPS', gsplatPSWgsl);
+
+        this.coreEntity = this.createCoreEntity();
+        this.particleEntity = this.createParticleEntity();
+
+        app.on('framerender', () => {
+            if (this.target && this.visible) {
+                app.renderNextFrame = true;
+            }
+        });
+    }
+
+    private createCoreEntity(): Entity {
+        const device = this.app.graphicsDevice;
+
+        const mesh = new Mesh(device);
+        mesh.setPositions([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3);
+        mesh.setIndices([0, 1, 2, 0, 2, 3]);
+        mesh.update(PRIMITIVE_TRIANGLES);
+
+        const material = new ShaderMaterial({
+            uniqueName: 'walkCoreMaterial',
+            vertexGLSL: coreVS,
+            fragmentGLSL: coreFS,
+            vertexWGSL: coreVS_WGSL,
+            fragmentWGSL: coreFS_WGSL,
+            attributes: {
+                vertex_position: SEMANTIC_POSITION
+            }
+        });
+        material.blendType = BLEND_NONE;
+        material.depthWrite = true;
+        material.depthTest = true;
+        material.cull = CULLFACE_NONE;
+        material.update();
+
+        const mi = new MeshInstance(mesh, material);
+        mi.cull = false;
+
+        const entity = new Entity('walkCore');
+        entity.addComponent('render', {
+            meshInstances: [mi]
+        });
+        entity.enabled = false;
+
+        this.app.root.addChild(entity);
+        return entity;
+    }
+
+    private createParticleEntity(): Entity {
+        const device = this.app.graphicsDevice;
+        const rng = mulberry32(42);
+
+        const totalVerts = PARTICLE_COUNT * 4;
+        const totalIndices = PARTICLE_COUNT * 6;
+
+        const particleData = new Float32Array(totalVerts * 3);
+        const corners = new Float32Array(totalVerts * 2);
+        const indices = new Uint16Array(totalIndices);
+
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            const rand0 = i / PARTICLE_COUNT;
+            const rand1 = rng();
+            const rand2 = rng();
+
+            const base = i * 4;
+            for (let j = 0; j < 4; j++) {
+                const vi = base + j;
+
+                particleData[vi * 3] = rand0;
+                particleData[vi * 3 + 1] = rand1;
+                particleData[vi * 3 + 2] = rand2;
+
+                corners[vi * 2] = QUAD_CORNERS[j * 2];
+                corners[vi * 2 + 1] = QUAD_CORNERS[j * 2 + 1];
+            }
+
+            const ii = i * 6;
+            indices[ii] = base;
+            indices[ii + 1] = base + 1;
+            indices[ii + 2] = base + 2;
+            indices[ii + 3] = base;
+            indices[ii + 4] = base + 2;
+            indices[ii + 5] = base + 3;
+        }
+
+        const mesh = new Mesh(device);
+        mesh.setPositions(particleData, 3);
+        mesh.setVertexStream(SEMANTIC_TEXCOORD1, corners, 2);
+        mesh.setIndices(indices);
+        mesh.update(PRIMITIVE_TRIANGLES);
+
+        const material = new ShaderMaterial({
+            uniqueName: 'walkParticleMaterial',
+            vertexGLSL: particleVS,
+            fragmentGLSL: particleFS,
+            vertexWGSL: particleVS_WGSL,
+            fragmentWGSL: particleFS_WGSL,
+            attributes: {
+                vertex_position: SEMANTIC_POSITION,
+                aQuadCorner: SEMANTIC_TEXCOORD1
+            }
+        });
+        material.blendType = BLEND_NONE;
+        material.depthWrite = true;
+        material.depthTest = true;
+        material.cull = CULLFACE_NONE;
+        material.update();
+
+        const mi = new MeshInstance(mesh, material);
+        mi.cull = false;
+
+        const entity = new Entity('walkParticles');
+        entity.addComponent('render', {
+            meshInstances: [mi]
+        });
+        entity.enabled = false;
+
+        this.app.root.addChild(entity);
+        return entity;
     }
 
     /**
@@ -302,9 +707,13 @@ class WalkIndicator {
      */
     setTarget(pos: Vec3 | null) {
         this.target = pos ? pos.clone() : null;
+        this.visible = !!pos;
         if (pos) {
             this.startTime = performance.now() / 1000;
         }
+        this.coreEntity.enabled = this.visible;
+        this.particleEntity.enabled = this.visible;
+        this.app.renderNextFrame = true;
     }
 
     /**
@@ -323,13 +732,25 @@ class WalkIndicator {
         scope.resolve('walk_viewInverse').setValue(invViewMat.data);
 
         if (this.target) {
+            const camPos = camera.getPosition();
+            const dist = camPos.distance(this.target);
+            this.visible = dist > 2.0;
+
+            this.coreEntity.enabled = this.visible;
+            this.particleEntity.enabled = this.visible;
+
             const elapsed = performance.now() / 1000 - this.startTime;
-            scope.resolve('walk_target').setValue([this.target.x, this.target.y, this.target.z]);
-            scope.resolve('walk_radius').setValue(1.5);
+            targetVec[0] = this.target.x;
+            targetVec[1] = this.target.y;
+            targetVec[2] = this.target.z;
+            scope.resolve('walk_target').setValue(targetVec);
+            scope.resolve('walk_radius').setValue(this.visible ? 1.5 : 0);
             scope.resolve('walk_time').setValue(elapsed);
-            this.app.renderNextFrame = true;
         } else {
-            scope.resolve('walk_target').setValue([0, 0, 0]);
+            targetVec[0] = 0;
+            targetVec[1] = 0;
+            targetVec[2] = 0;
+            scope.resolve('walk_target').setValue(targetVec);
             scope.resolve('walk_radius').setValue(0);
             scope.resolve('walk_time').setValue(0);
         }
@@ -339,6 +760,8 @@ class WalkIndicator {
         const device = this.app.graphicsDevice;
         ShaderChunks.get(device, 'glsl').set('gsplatPS', this.origGlsl);
         ShaderChunks.get(device, 'wgsl').set('gsplatPS', this.origWgsl);
+        this.coreEntity.destroy();
+        this.particleEntity.destroy();
     }
 }
 
