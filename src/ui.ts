@@ -239,6 +239,7 @@ const initUI = (global: Global) => {
         'desktopClickToWalk', 'desktopGamingControls',
         'touchFlyClickToWalk', 'touchFlyGamingControls',
         'touchClickToWalk', 'touchGamingControls',
+        'walkHint',
         'reset', 'frame',
         'loadingText', 'loadingBar',
         'joystickBase', 'joystick',
@@ -558,6 +559,37 @@ const initUI = (global: Global) => {
     };
 
     events.on('cameraMode:changed', updateCameraModeUI);
+
+    // Walk mode hint banner (shown once per session on first FPS entry)
+    let walkHintShown = false;
+
+    const getWalkHintText = () => {
+        if (state.inputMode === 'desktop') {
+            return state.gamingControls ?
+                'WASD to move. Mouse to look around. Space to jump.' :
+                'Click to walk. Click and drag to look around.';
+        }
+        return state.gamingControls ?
+            'Use the joystick to move. Drag to look around. Tap to jump.' :
+            'Tap to walk. Drag to look around.';
+    };
+
+    events.on('cameraMode:changed', (value: string) => {
+        if (value === 'fps' && !walkHintShown) {
+            walkHintShown = true;
+            dom.walkHint.textContent = getWalkHintText();
+            dom.walkHint.classList.remove('hidden');
+        } else if (value !== 'fps') {
+            dom.walkHint.classList.add('hidden');
+        }
+    });
+
+    const dismissWalkHint = () => dom.walkHint.classList.add('hidden');
+
+    dom.walkHint.addEventListener('click', dismissWalkHint);
+    events.on('inputEvent', (type: string) => {
+        if (type === 'interrupt') dismissWalkHint();
+    });
 
     // show/hide the FPS button based on voxel data availability
     events.on('hasCollision:changed', (value: boolean) => {
