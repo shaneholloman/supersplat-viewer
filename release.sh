@@ -13,7 +13,7 @@ git fetch --tags
 
 # Calculate the next version
 if [[ "$PRE_RELEASE" != "false" ]]; then
-     npm version pre$TYPE --preid=$PRE_RELEASE --no-git-tag-version >> /dev/null
+     npm version pre$TYPE --preid=beta --no-git-tag-version >> /dev/null
 else
      npm version $TYPE --no-git-tag-version >> /dev/null
 fi
@@ -29,7 +29,7 @@ fi
 
 # Tag release
 if [[ "$PRE_RELEASE" != "false" ]]; then
-    npm version pre$TYPE --preid=$PRE_RELEASE
+    npm version pre$TYPE --preid=beta
 else
     npm version $TYPE
 fi
