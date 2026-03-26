@@ -12,7 +12,7 @@ type Config = {
     skyboxUrl?: string;
     contentUrl?: string;
     contents?: Promise<Response>;
-    voxelUrl?: string;
+    collisionUrl?: string;
 
     noui: boolean;
     noanim: boolean;
