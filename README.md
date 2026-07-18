@@ -51,7 +51,7 @@ By default the viewer uses WebGPU when available (falling back automatically whe
 | `budget` | Override the splat budget, in millions of splats |
 | `colorize` | Render with LOD colorization |
 | `fullload` | Load all streaming LOD data before the first frame |
-| `heatmap` | Render the heatmap debug overlay (WebGPU only) |
+| `heatmap` | Use heatmap mode for the voxel collision debug overlay. Requires WebGPU and voxel collision data; press `V` or use the collision toolbar button to show the overlay. |
 | `debug` | Open the developer debug panel on load (`Ctrl+Shift+D` to toggle) |
 
 ## NPM Package
